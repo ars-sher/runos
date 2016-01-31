@@ -3,6 +3,8 @@ project(runos)
 
 include(third_party/configure.cmake)
 
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "/home/ars/tmp/openflow/runos/build")
+
 set(CMAKE_CXX_FLAGS
     "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -Werror")
 

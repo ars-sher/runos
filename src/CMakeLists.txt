@@ -24,6 +24,7 @@ set(SOURCES
     ArpHandler.cc
     StaticFlowPusher.cc
     PathVerifier.cc
+    NATHelper.cc
     # Loader
     Main.cc
     # REST

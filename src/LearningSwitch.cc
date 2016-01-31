@@ -15,11 +15,13 @@
  */
 
 #include "LearningSwitch.hh"
-
 #include "Controller.hh"
 #include "Topology.hh"
 #include "Switch.hh"
 #include "STP.hh"
+#include "NATHelper.hh"
+
+#include <set>
 
 REGISTER_APPLICATION(LearningSwitch, {"controller", "switch-manager", "topology", "stp", ""})
 
@@ -31,8 +33,38 @@ void LearningSwitch::init(Loader *loader, const Config &config)
     stp = STP::get(loader);
 
     ctrl->registerHandler(this);
+
+    parseNATConfig("nat-settings.json");
+
+    LOG(INFO) << "initializing nat...";
+    std::set<IPAddress, IPv4AddressComparator> nat_ips;
+    nat_ips.insert(IPAddress(IPAddress::IPv4from_string("73.1.1.1")));
+    nat_ips.insert(IPAddress(IPAddress::IPv4from_string("73.1.1.2")));
+    nat_ips.insert(IPAddress(IPAddress::IPv4from_string("73.1.1.3")));
+    std::set<uint16_t> ports;
+    ports.insert(1025);
+    ports.insert(1026);
+    ports.insert(1027);
+    this->natSwitchId = 1;
+    this->natMappings = NATMappings(nat_ips, ports);
+
+    Socket s1(2, 3);
 }
 
+/* NAT part */
+void LearningSwitch::parseNATConfig(const std::string &config_file) {
+
+}
+
+OFMessageHandler::Action LearningSwitch::Handler::processMiss(OFConnection* ofconn, Flow* flow) {
+    LOG(INFO) << "The fucking packet has arrived";
+    flow->setFlags(Flow::Disposable);
+    return processMissLearningSwitch(ofconn, flow);
+    return Stop;
+}
+
+
+/* LearningSwitch part */
 std::pair<bool, switch_and_port>
 LearningSwitch::findAndLearn(const switch_and_port& where,
                              const EthAddress& eth_src,
@@ -63,7 +95,7 @@ LearningSwitch::findAndLearn(const switch_and_port& where,
     return ret;
 }
 
-OFMessageHandler::Action LearningSwitch::Handler::processMiss(OFConnection* ofconn, Flow* flow)
+OFMessageHandler::Action LearningSwitch::Handler::processMissLearningSwitch(OFConnection* ofconn, Flow* flow)
 {
     static EthAddress broadcast("ff:ff:ff:ff:ff:ff");
 

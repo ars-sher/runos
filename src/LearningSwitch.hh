@@ -15,20 +15,22 @@
  */
 
 #pragma once
-#include "Common.hh"
 
 #include <mutex>
 #include <unordered_map>
 
+#include "Common.hh"
 #include "Application.hh"
 #include "Loader.hh"
 #include "OFMessageHandler.hh"
 #include "ILinkDiscovery.hh"
 #include "FluidUtils.hh"
+#include "NATHelper.hh"
 
 class LearningSwitch : public Application, OFMessageHandlerFactory {
 SIMPLE_APPLICATION(LearningSwitch, "learning-switch")
 Q_OBJECT
+/* LearningSwitch part */
 public:
     void init(Loader* loader, const Config& config) override;
     std::string orderingName() const override { return "forwarding"; }
@@ -41,12 +43,15 @@ public:
     findAndLearn(const switch_and_port& where,
                  const EthAddress& src,
                  const EthAddress& dst);
-
+signals:
+    void newRoute(Flow* flow, std::string src, std::string dst, uint64_t dpid, uint32_t out_port);
 private:
+    /* LearningSwitch part */
     class Handler: public OFMessageHandler {
     public:
         Handler(LearningSwitch* app_) : app(app_) { }
         Action processMiss(OFConnection* ofconn, Flow* flow) override;
+        Action processMissLearningSwitch(OFConnection* ofconn, Flow* flow);
     private:
         LearningSwitch* app;
     };
@@ -57,6 +62,11 @@ private:
 
     std::mutex db_lock;
     std::unordered_map<EthAddress, switch_and_port> db;
-signals:
-    void newRoute(Flow* flow, std::string src, std::string dst, uint64_t dpid, uint32_t out_port);
+
+/* NAT part */
+private:
+    uint32_t natSwitchId;
+    NATMappings natMappings;
+
+    void parseNATConfig(const std::string &config_file);
 };
