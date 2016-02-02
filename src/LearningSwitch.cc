@@ -22,6 +22,8 @@
 #include "NATHelper.hh"
 
 #include <set>
+#include <chrono>
+#include <thread>
 
 REGISTER_APPLICATION(LearningSwitch, {"controller", "switch-manager", "topology", "stp", ""})
 
@@ -36,7 +38,7 @@ void LearningSwitch::init(Loader *loader, const Config &config)
 
     parseNATConfig("nat-settings.json");
 
-    LOG(INFO) << "initializing nat...";
+    LOG(INFO) << "initializing NAT";
     std::set<IPAddress, IPv4AddressComparator> nat_ips;
     nat_ips.insert(IPAddress(IPAddress::IPv4from_string("73.1.1.1")));
     nat_ips.insert(IPAddress(IPAddress::IPv4from_string("73.1.1.2")));
@@ -45,10 +47,35 @@ void LearningSwitch::init(Loader *loader, const Config &config)
     ports.insert(1025);
     ports.insert(1026);
     ports.insert(1027);
-    this->natSwitchId = 1;
-    this->natMappings = NATMappings(nat_ips, ports);
+    natSwitchId = 1;
+    natMappings = NATMappings(nat_ips, ports);
 
-    Socket s1(2, 3);
+    IPAddress local_ip1 = IPAddress(IPAddress::IPv4from_string("192.168.1.1"));
+    IPAddress local_ip2 = IPAddress(IPAddress::IPv4from_string("192.168.1.2"));
+    IPAddress local_ip3 = IPAddress(IPAddress::IPv4from_string("192.168.1.3"));
+
+    IPAddress gl_ip1 = IPAddress(IPAddress::IPv4from_string("77.37.250.168"));
+    IPAddress gl_ip2 = IPAddress(IPAddress::IPv4from_string("77.37.250.169"));
+    IPAddress gl_ip3 = IPAddress(IPAddress::IPv4from_string("77.37.250.170"));
+
+
+    Socket issuedSocket1 = natMappings.processOutcoming(Socket(local_ip1, 9000), Socket(gl_ip1, 80));
+    LOG(INFO) << "Issued socket 1 is " << issuedSocket1 << std::endl;
+    Socket issuedSocket2 = natMappings.processOutcoming(Socket(local_ip1, 9000), Socket(gl_ip1, 90));
+    LOG(INFO) << "Issued socket 2 is " << issuedSocket2 << std::endl;
+    Socket issuedSocket3 = natMappings.processOutcoming(Socket(local_ip2, 9000), Socket(gl_ip1, 80));
+    LOG(INFO) << "Issued socket 3 is " << issuedSocket3 << std::endl;
+    LOG(INFO) << natMappings;
+
+    std::this_thread::sleep_for(std::chrono::seconds(20));
+    natMappings.wipeOutExpiredMappings();
+    LOG(INFO) << natMappings;
+    Socket issuedSocket4 = natMappings.processOutcoming(Socket(local_ip2, 9000), Socket(gl_ip1, 90));
+
+    std::this_thread::sleep_for(std::chrono::seconds(12));
+    natMappings.wipeOutExpiredMappings();
+    LOG(INFO) << natMappings;
+
 }
 
 /* NAT part */
