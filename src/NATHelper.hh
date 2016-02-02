@@ -74,6 +74,7 @@ class NATMappings {
     // tuple<nat_ip, nat_port, map<dst_port, creation_time>
     typedef std::tuple<Socket, std::unordered_map<uint16_t, time_t>> NATMappingValue;
     std::unordered_map<NATMappingPrimaryKey, NATMappingValue> mappings;
+    // after timeout seconds record will be invalid
     static constexpr double timeout = 15;
 
     // returns NAT IP and Port from mappings or creates new if needed
@@ -82,7 +83,6 @@ class NATMappings {
     bool isValidMapping(const NATMappingValue &nat_value);
     // check if the record is outdated
     bool isRecordValid(const time_t &creation_time) const;
-    void deleteMapping(const NATMappingPrimaryKey &key);
     // add record if it doesn't exist
     void ensureRecordExistence(NATMappingValue& mapping, uint16_t dst_port);
     friend std::ostream& operator<<(std::ostream &strm, const NATMappings &s);
@@ -91,8 +91,8 @@ public:
     NATMappings(std::set<IPAddress, IPv4AddressComparator> nat_ips, std::set<uint16_t> nat_ports);
     NATMappings() {}; // FIXME: why can't I forbid it?
     // returns NAT IP and port for incoming packet.
-    Socket processOutcoming(Socket localSocket, Socket globalSocket);
-    Socket processIncoming(Socket globalSocket, Socket NATSocket);
+    const Socket * processOutcoming(Socket localSocket, Socket globalSocket);
+    const Socket * processIncoming(Socket globalSocket, Socket NATSocket);
     void wipeOutExpiredMappings();
 };
 

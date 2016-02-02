@@ -46,16 +46,32 @@ bool Socket::operator<(const Socket &s) const {
 NATMappings::NATMappings(std::set<IPAddress, IPv4AddressComparator> nat_ips,
                          std::set<uint16_t> nat_ports) : socketStorage(nat_ips, nat_ports) {}
 
-Socket NATMappings::processOutcoming(Socket localSocket, Socket globalSocket) {
+const Socket * NATMappings::processOutcoming(Socket localSocket, Socket globalSocket) {
     NATMappingValue &nat_value = getNATIPAndPort(std::make_tuple(localSocket, globalSocket.ip));
-    Socket nat_socket = std::get<0>(nat_value);
+    const Socket * nat_socket_ptr = &std::get<0>(nat_value);
     ensureRecordExistence(nat_value, globalSocket.port);
-    return nat_socket;
+    return nat_socket_ptr;
 }
 
-//Socket NATMappings::processIncoming(Socket globalSocket, Socket NATSocket) {
-//    return Socket();
-//}
+const Socket *NATMappings::processIncoming(Socket globalSocket, Socket NATSocket) {
+    auto mp_it = mappings.begin();
+    while (mp_it != mappings.end()) {
+        const NATMappingPrimaryKey &key = mp_it->first;
+        const NATMappingValue &nat_value = mp_it->second;
+        if (!isValidMapping(nat_value))
+            mp_it = mappings.erase(mp_it);
+        else {
+            if (std::get<1>(key) == globalSocket.ip && std::get<0>(nat_value) == NATSocket) {
+                auto const &rec_map = std::get<1>(nat_value);
+                auto const &rec_it = rec_map.find(globalSocket.port);
+                if (rec_it != rec_map.end())
+                    return &std::get<0>(key);
+            }
+            ++mp_it;
+        }
+    }
+    return nullptr;
+}
 
 NATMappings::NATMappingValue &NATMappings::getNATIPAndPort(const NATMappings::NATMappingPrimaryKey &key) {
     auto it = mappings.find(key);
