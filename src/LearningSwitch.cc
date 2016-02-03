@@ -24,6 +24,7 @@
 #include <set>
 #include <chrono>
 #include <thread>
+#include <fstream>
 
 REGISTER_APPLICATION(LearningSwitch, {"controller", "switch-manager", "topology", "stp", ""})
 
@@ -37,64 +38,180 @@ void LearningSwitch::init(Loader *loader, const Config &config)
     ctrl->registerHandler(this);
 
     parseNATConfig("nat-settings.json");
+}
 
-    LOG(INFO) << "initializing NAT";
-    IPAddress local_ip1 = IPAddress(IPAddress::IPv4from_string("192.168.1.1"));
-    IPAddress local_ip2 = IPAddress(IPAddress::IPv4from_string("192.168.1.2"));
-    IPAddress local_ip3 = IPAddress(IPAddress::IPv4from_string("192.168.1.3"));
+OFMessageHandler::Action LearningSwitch::Handler::processMiss(OFConnection* ofconn, Flow* flow) {
+    const Switch *sw = app->switch_manager->getSwitch(ofconn);
 
-    IPAddress gl_ip1 = IPAddress(IPAddress::IPv4from_string("77.37.250.168"));
-    IPAddress gl_ip2 = IPAddress(IPAddress::IPv4from_string("77.37.250.169"));
-    IPAddress gl_ip3 = IPAddress(IPAddress::IPv4from_string("77.37.250.170"));
-
-    IPAddress nat_ip1 = IPAddress(IPAddress::IPv4from_string("77.1.1.1"));
-    IPAddress nat_ip2 = IPAddress(IPAddress::IPv4from_string("77.1.1.2"));
-    IPAddress nat_ip3 = IPAddress(IPAddress::IPv4from_string("77.1.1.3"));
-
-    std::set<IPAddress, IPv4AddressComparator> nat_ips;
-    nat_ips.insert(IPAddress(nat_ip1));
-    nat_ips.insert(IPAddress(nat_ip2));
-    nat_ips.insert(IPAddress(nat_ip3));
-    std::set<uint16_t> ports;
-    ports.insert(1025);
-    ports.insert(1026);
-    ports.insert(1027);
-    natSwitchId = 1;
-    natMappings = NATMappings(nat_ips, ports);
-
-
-    Socket issuedSocket1 = *natMappings.processOutcoming(Socket(local_ip1, 9000), Socket(gl_ip1, 80));
-    LOG(INFO) << "Issued socket 1 is " << issuedSocket1 << std::endl;
-    Socket issuedSocket2 = *natMappings.processOutcoming(Socket(local_ip1, 9000), Socket(gl_ip1, 90));
-    LOG(INFO) << "Issued socket 2 is " << issuedSocket2 << std::endl;
-    Socket issuedSocket3 = *natMappings.processOutcoming(Socket(local_ip2, 9000), Socket(gl_ip1, 80));
-    LOG(INFO) << "Issued socket 3 is " << issuedSocket3 << std::endl;
-    LOG(INFO) << natMappings;
-    const Socket *localSocket_ptr = natMappings.processIncoming(Socket(gl_ip1, 80), Socket(nat_ip1, 1025));
-    if (localSocket_ptr)
-        LOG(INFO) << "Given local socket: " << *localSocket_ptr;
-    else
-        LOG(INFO) << "Packed dropped";
-
-    std::this_thread::sleep_for(std::chrono::seconds(20));
-    localSocket_ptr = natMappings.processIncoming(Socket(gl_ip1, 80), Socket(nat_ip1, 1025));
-    if (localSocket_ptr)
-        LOG(INFO) << "Given local socket: " << *localSocket_ptr;
-    else
-        LOG(INFO) << "Packed dropped";
-
+    if (sw && app->isNATSwitch(sw) && app->isTCPPacket(flow)) {
+        flow->setFlags(Flow::Disposable);
+//        LOG(INFO) << "A  packet has arrived at the NAT switch with dpid " << sw->id() << " to port " << flow->loadInPort();
+        Socket src_socket(flow->loadIPv4Src(), flow->loadTCPSrc());
+        Socket dst_socket(flow->loadIPv4Dst(), flow->loadTCPDst());
+        if (app->isOutComingPacket(flow)) {
+            Socket issuedNATSocket = *app->natMappings.processOutcoming(src_socket, dst_socket);
+            flow->add_action(new of13::SetFieldAction(new of13::IPv4Src(issuedNATSocket.ip)));
+            flow->add_action(new of13::SetFieldAction(new of13::TCPSrc(issuedNATSocket.port)));
+            LOG(INFO) << "The packet is passed behind NAT, issued socket is " << issuedNATSocket;
+        }
+        else {
+            const Socket *issuedLocalSocketPtr = app->natMappings.processIncoming(src_socket, dst_socket);
+            if (issuedLocalSocketPtr) {
+                flow->add_action(new of13::SetFieldAction(new of13::IPv4Dst(issuedLocalSocketPtr->ip)));
+                flow->add_action(new of13::SetFieldAction(new of13::TCPDst(issuedLocalSocketPtr->port)));
+                LOG(INFO) << "The packet is passed inside NAT, redirected to local socket " << *issuedLocalSocketPtr;
+            }
+            else {
+                LOG(INFO) << "Not found any record for packet from external network; dropping it";
+                return Stop;
+            }
+        }
+    }
+//    else if (sw && app->isTCPPacket(flow)) {
+//        LOG(INFO) << "A packet has arrived at non-NAT switch " << sw->id() << " to port " << flow->loadInPort();
+//    }
+    return processMissLearningSwitch(ofconn, flow);
 }
 
 /* NAT part */
 void LearningSwitch::parseNATConfig(const std::string &config_file) {
+    std::ifstream nat_config_stream(config_file);
+    std::string config((std::istreambuf_iterator<char>(nat_config_stream)), std::istreambuf_iterator<char>());
+    std::string parse_error = "";
+    auto nat_config_json = json11::Json::parse(config, parse_error);
+    if (parse_error != "" || !nat_config_json.is_object()) {
+        LOG(INFO) << "Error during nat settings json parse: " << parse_error;
+        throw NATSettingsJsonParseError();
+    }
 
+    LOG(INFO) << "initializing NAT";
+    uint32_t nat_switch_dpid = 2;
+    std::set<uint32_t> nat_switch_local_port_ids = {1};
+    double timeout = 15;
+    std::set<IPAddress, IPv4AddressComparator> nat_ips;
+    std::set<uint16_t> nat_ports;
+
+    auto nat_dpid_json = nat_config_json["nat-dpid"];
+    if (!nat_dpid_json.is_number() || (nat_dpid_json.int_value() < 1))
+        LOG(WARNING) << "NAT config should contain numerical 'nat-dpid' field, setting default parameter = " <<
+                nat_switch_dpid;
+    else
+        nat_switch_dpid = (uint32_t)nat_dpid_json.int_value();
+
+    auto nat_timeout_json = nat_config_json["timeout"];
+    if (!nat_timeout_json.is_number() || (nat_timeout_json.int_value() < 1))
+        LOG(WARNING) << "NAT config should contain numerical 'timeout' field, setting default parameter = " <<
+        timeout;
+    else
+        timeout = (uint32_t)nat_timeout_json.int_value();
+
+    auto nat_switch_local_port_ids_json = nat_config_json["nat-switch-local-ports"];
+    if (!nat_switch_local_port_ids_json.is_array()) {
+        LOG(WARNING) << "NAT config should contain numerical array of nat switch local ports, setting default"
+                                " parameter = {1}";
+    }
+    else {
+        auto nat_switch_local_port_ids_array = nat_switch_local_port_ids_json.array_items();
+        nat_switch_local_port_ids.clear();
+        for (auto it : nat_switch_local_port_ids_array) {
+            if (it.is_number() && it.number_value() >= 1)
+                nat_switch_local_port_ids.insert((uint32_t)it.number_value());
+        }
+    }
+
+    auto nat_ips_json = nat_config_json["nat-ips"];
+    if (!nat_ips_json.is_array()) {
+        LOG(WARNING) << "NAT config must contain array of NAT IPs";
+        throw NATSettingsJsonParseError();
+    }
+    else {
+        auto nat_ips_array = nat_ips_json.array_items();
+        for (auto it : nat_ips_array) {
+            if (!it.is_string() || AppObject::uint32_t_ip_to_string(IPAddress(it.string_value()).getIPv4()) != it.string_value())
+                continue;
+            nat_ips.insert(IPAddress(it.string_value()));
+        }
+    }
+
+    auto nat_ports_json = nat_config_json["nat-ports"];
+    if (!nat_ports_json.is_array()) {
+        LOG(WARNING) << "NAT config must contain array of nat ports";
+        throw NATSettingsJsonParseError();
+    }
+    else {
+        auto nat_ports_array = nat_ports_json.array_items();
+        for (auto it : nat_ports_array) {
+            if (it.is_number() && it.number_value() >= 1 && it.number_value() <= 65535)
+                nat_ports.insert((uint16_t)it.number_value());
+        }
+    }
+
+    natSwitchId = nat_switch_dpid;
+    natSwitchLocalPorts = nat_switch_local_port_ids;
+    natMappings = NATMappings(nat_ips, nat_ports, timeout);
+
+    LOG(INFO) << natMappings.socketStorage;
+    LOG(INFO) << "timeout is " << natMappings.timeout;
+
+//    IPAddress local_ip1 = IPAddress(IPAddress::IPv4from_string("192.168.1.1"));
+//    IPAddress local_ip2 = IPAddress(IPAddress::IPv4from_string("192.168.1.2"));
+//    IPAddress local_ip3 = IPAddress(IPAddress::IPv4from_string("192.168.1.3"));
+//
+//    IPAddress gl_ip1 = IPAddress(IPAddress::IPv4from_string("77.37.250.168"));
+//    IPAddress gl_ip2 = IPAddress(IPAddress::IPv4from_string("77.37.250.169"));
+//    IPAddress gl_ip3 = IPAddress(IPAddress::IPv4from_string("77.37.250.170"));
+//
+//    IPAddress nat_ip1 = IPAddress(IPAddress::IPv4from_string("10.0.0.200"));
+//    IPAddress nat_ip2 = IPAddress(IPAddress::IPv4from_string("10.0.0.201"));
+//    IPAddress nat_ip3 = IPAddress(IPAddress::IPv4from_string("10.0.0.202"));
+//
+//    nat_ips.insert(IPAddress(nat_ip1));
+//    nat_ips.insert(IPAddress(nat_ip2));
+//    nat_ips.insert(IPAddress(nat_ip3));
+//    nat_ports.insert(1025);
+//    nat_ports.insert(1026);
+//    nat_ports.insert(1027);
+//    natSwitchLocalPorts.insert(1);
+//    natSwitchLocalPorts.insert(2);
+//
+//
+//    Socket issuedSocket1 = *natMappings.processOutcoming(Socket(local_ip1, 9000), Socket(gl_ip1, 80));
+//    LOG(INFO) << "Issued socket 1 is " << issuedSocket1 << std::endl;
+//    Socket issuedSocket2 = *natMappings.processOutcoming(Socket(local_ip1, 9000), Socket(gl_ip1, 90));
+//    LOG(INFO) << "Issued socket 2 is " << issuedSocket2 << std::endl;
+//    Socket issuedSocket3 = *natMappings.processOutcoming(Socket(local_ip2, 9000), Socket(gl_ip1, 80));
+//    LOG(INFO) << "Issued socket 3 is " << issuedSocket3 << std::endl;
+//    LOG(INFO) << natMappings;
+//    const Socket *localSocket_ptr = natMappings.processIncoming(Socket(gl_ip1, 80), Socket(nat_ip1, 1025));
+//    if (localSocket_ptr)
+//        LOG(INFO) << "Given local socket: " << *localSocket_ptr;
+//    else
+//        LOG(INFO) << "Packed dropped";
+//
+////    std::this_thread::sleep_for(std::chrono::seconds(20));
+//    localSocket_ptr = natMappings.processIncoming(Socket(gl_ip1, 80), Socket(nat_ip1, 1025));
+//    if (localSocket_ptr)
+//        LOG(INFO) << "Given local socket: " << *localSocket_ptr;
+//    else
+//        LOG(INFO) << "Packed dropped";
 }
 
-OFMessageHandler::Action LearningSwitch::Handler::processMiss(OFConnection* ofconn, Flow* flow) {
-    LOG(INFO) << "The fucking packet has arrived";
-    flow->setFlags(Flow::Disposable);
-    return processMissLearningSwitch(ofconn, flow);
-    return Stop;
+bool LearningSwitch::isNATSwitch(const Switch *sw) {
+    return sw->id() == natSwitchId;
+}
+
+bool LearningSwitch::isOutComingPacket(Flow *flow) {
+    return natSwitchLocalPorts.find(flow->loadInPort()) != natSwitchLocalPorts.end();
+}
+
+bool LearningSwitch::isTCPPacket(Flow *flow) {
+//    LOG(INFO) << "Try to guess is it NAT? ethtype is " << flow->loadEthType() << "A";
+    if (flow->loadEthType() != 0x0800 || flow -> loadIPProto() != 0x06) {
+        return false;
+    } else if ((AppObject::uint32_t_ip_to_string(flow->loadIPv4Src().getIPv4()) == "0.0.0.0") || (AppObject::uint32_t_ip_to_string(flow->loadIPv4Src().getIPv4()) == "255.255.255.255")) {
+        return false;
+    }
+    return true;
 }
 
 

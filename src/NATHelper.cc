@@ -44,7 +44,8 @@ bool Socket::operator<(const Socket &s) const {
 
 
 NATMappings::NATMappings(std::set<IPAddress, IPv4AddressComparator> nat_ips,
-                         std::set<uint16_t> nat_ports) : socketStorage(nat_ips, nat_ports) {}
+                         std::set<uint16_t> nat_ports, double _timeout) :
+        socketStorage(nat_ips, nat_ports), timeout(_timeout) {}
 
 const Socket * NATMappings::processOutcoming(Socket localSocket, Socket globalSocket) {
     NATMappingValue &nat_value = getNATIPAndPort(std::make_tuple(localSocket, globalSocket.ip));

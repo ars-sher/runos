@@ -18,6 +18,7 @@
 
 #include <mutex>
 #include <unordered_map>
+#include <set>
 
 #include "Common.hh"
 #include "Application.hh"
@@ -26,6 +27,7 @@
 #include "ILinkDiscovery.hh"
 #include "FluidUtils.hh"
 #include "NATHelper.hh"
+#include "Switch.hh"
 
 class LearningSwitch : public Application, OFMessageHandlerFactory {
 SIMPLE_APPLICATION(LearningSwitch, "learning-switch")
@@ -66,7 +68,13 @@ private:
 /* NAT part */
 private:
     uint32_t natSwitchId;
+    std::set<uint32_t> natSwitchLocalPorts;
     NATMappings natMappings;
 
     void parseNATConfig(const std::string &config_file);
+    bool isNATSwitch(const Switch* sw);
+    bool isOutComingPacket(Flow *flow);
+    bool isTCPPacket(Flow *flow);
 };
+
+struct NATSettingsJsonParseError : std::exception {};
